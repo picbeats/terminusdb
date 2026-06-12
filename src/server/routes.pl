@@ -1364,11 +1364,27 @@ test(rebase_divergent_history, [
 :- end_tests(rebase_endpoint).
 
 %%%%%%%%%%%%%%%%%%%% Pack Handlers %%%%%%%%%%%%%%%%%%%%%%%%%
+:- http_handler(api(bundle/Path), cors_handler(Method, bundle_handler(Path)),
+                [method(Method),
+                 time_limit(infinite),
+                 chunked,
+                 methods([options,post])]).
+
 :- http_handler(api(pack/Path), cors_handler(Method, pack_handler(Path)),
                 [method(Method),
                  time_limit(infinite),
                  chunked,
                  methods([options,post])]).
+
+bundle_handler(post, Path, Request, System_DB, Auth) :-
+    api_report_errors(
+        bundle,
+        Request,
+        bundle(System_DB, Auth, Path, Payload, [])),
+
+    format('Content-type: application/octets~n', []),
+    format('Status: 200 OK~n~n', []),
+    format('~s', [Payload]).
 
 pack_handler(post,Path,Request, System_DB, Auth) :-
     get_payload(Document,Request),
@@ -1480,12 +1496,73 @@ test(pack_nothing, [
 
 :- end_tests(pack_endpoint).
 
+:- begin_tests(bundle_endpoint).
+
+:- use_module(core(util/test_utils)).
+:- use_module(library(http/http_open)).
+
+test(bundle_unbundle, [
+         setup(setup_temp_server(State, Server)),
+         cleanup(teardown_temp_server(State))
+     ]) :-
+    add_user('_a_test_user_',some('password'),_User_ID),
+    create_db_without_schema('_a_test_user_',foo),
+
+    resolve_absolute_string_descriptor('_a_test_user_/foo', Descriptor),
+    create_context(Descriptor, commit_info{author:"user",message:"commit a"}, Context),
+    with_transaction(Context,
+                     ask(Context,
+                         insert(a,b,c)),
+                     _),
+
+    atomic_list_concat([Server, '/api/bundle/_a_test_user_/foo'], Bundle_URI),
+    http_post(Bundle_URI,
+              atom(''),
+              Payload,
+              [authorization(basic('_a_test_user_','password'))]),
+
+    create_db_without_schema('_a_test_user_',bar),
+    string_codes(Payload, Payload_Bytes),
+    atomic_list_concat([Server, '/api/unbundle/_a_test_user_/bar'], Unbundle_URI),
+    http_post(Unbundle_URI,
+              bytes('application/octets', Payload_Bytes),
+              Reply,
+              [authorization(basic('_a_test_user_','password')),
+               status_code(Status)]),
+    assertion(Status = 200),
+    assertion(Reply = json(['@type'='api:UnbundleResponse', 'api:status'='api:success'])),
+
+    resolve_absolute_string_descriptor('_a_test_user_/bar', Restored_Descriptor),
+    create_context(Restored_Descriptor, Restored_Context),
+    once(ask(Restored_Context, t(a,b,c))).
+
+:- end_tests(bundle_endpoint).
+
 %%%%%%%%%%%%%%%%%%%% Unpack Handlers %%%%%%%%%%%%%%%%%%%%%%%
+:- http_handler(api(unbundle/Path), cors_handler(Method, unbundle_handler(Path)),
+                [method(Method),
+                 chunked,
+                 time_limit(infinite),
+                 methods([options,post])]).
+
 :- http_handler(api(unpack/Path), cors_handler(Method, unpack_handler(Path)),
                 [method(Method),
                  chunked,
                  time_limit(infinite),
                  methods([options,post])]).
+
+unbundle_handler(post, Path, Request, System_DB, Auth) :-
+    get_payload(Payload, Request),
+
+    api_report_errors(
+        unbundle,
+        Request,
+        (   unbundle(System_DB, Auth, Path, Payload),
+            cors_reply_json(Request,
+                            _{'@type' : 'api:UnbundleResponse',
+                              'api:status' : "api:success"},
+                            [status(200), width(0)])
+        )).
 
 unpack_handler(post, Path, Request, System_DB, Auth) :-
 
