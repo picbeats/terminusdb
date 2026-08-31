@@ -1574,6 +1574,13 @@ api_error_jsonld_(patch,error(patch_conflicts(Conflicts)), JSON) :-
              'api:message' : Msg,
              'api:error' : _{ '@type' : "api:PatchConflict",
                               'api:conflicts' : Conflicts }
+             }.
+api_error_jsonld_(patch,error(no_id_in_patch(Patch),_), JSON) :-
+    JSON = _{'@type' : 'api:PatchErrorResponse',
+             'api:status' : "api:failure",
+             'api:message' : "Each patch operation requires an @id, insert @id, delete @id, or insert @capture.",
+             'api:error' : _{ '@type' : 'api:NoIdInPatch',
+                              'api:patch' : Patch }
             }.
 api_error_jsonld_(patch, Error, JSON) :-
     api_document_error_jsonld(patch, Error, JSON).

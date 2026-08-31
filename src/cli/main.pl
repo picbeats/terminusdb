@@ -431,6 +431,16 @@ opt_spec(unbundle,'terminusdb unbundle DATABASE_SPEC FILE OPTIONS',
            default(false),
            help('print help for the `unbundle` command')]
          ]).
+opt_spec(backup,'terminusdb backup DATABASE_SPEC OPTIONS',
+         'Create a self-contained backup including all branches.',
+         [[opt(help), type(boolean), longflags([help]), shortflags([h]),
+           default(false), help('print help for the `backup` command')],
+          [opt(output), type(atom), longflags([output]), shortflags([o]),
+           default('_'), help('file name to use for backup output')]]).
+opt_spec(restore,'terminusdb restore DATABASE_SPEC FILE OPTIONS',
+         'Create DATABASE_SPEC from a backup file.',
+         [[opt(help), type(boolean), longflags([help]), shortflags([h]),
+           default(false), help('print help for the `restore` command')]]).
 opt_spec(diff,'terminusdb diff [Path] OPTIONS',
          'Create a diff between two JSONs, a JSON and a commit (path required),
 or two commits (path required).',
@@ -1887,6 +1897,32 @@ run_command(unbundle,[Path, Filename], Opts) :-
             format(current_output, "Unbundle successful~n", [])
         )
     ).
+run_command(backup,[Path], Opts) :-
+    opt_authority(Opts, Auth),
+    create_context(system_descriptor{}, System_DB),
+    option(output(Filename), Opts),
+    (   var(Filename)
+    ->  www_form_encode(Path, Base),
+        atomic_list_concat([Base, ".backup.json"], Filename)
+    ;   true
+    ),
+    api_report_errors(
+        backup,
+        (   backup(System_DB, Auth, Path, Backup),
+            setup_call_cleanup(open(Filename, write, Stream),
+                               json_write_dict(Stream, Backup, [width(0)]),
+                               close(Stream))
+        )).
+run_command(restore,[Path, Filename], Opts) :-
+    opt_authority(Opts, Auth),
+    create_context(system_descriptor{}, System_DB),
+    api_report_errors(
+        restore,
+        (   setup_call_cleanup(open(Filename, read, Stream),
+                               json_read_dict(Stream, Backup),
+                               close(Stream)),
+            restore(System_DB, Auth, Path, Backup)
+        )).
 run_command(diff, Args, Opts) :-
     opt_authority(Opts, Auth),
     create_context(system_descriptor{}, System_DB),

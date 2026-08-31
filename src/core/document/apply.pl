@@ -83,6 +83,12 @@ apply_diff(Context, Diff, Conflict, Options) :-
     ).
 
 
+update_existing_insert_capture(Insert, Id, Captures_In, Captures_Out) :-
+    (   get_dict('@capture', Insert, Capture)
+    ->  update_captures_with_id(Capture, Id, Captures_In, Captures_Out)
+    ;   Captures_Out = Captures_In
+    ).
+
 apply_diff_ids_captures(Context, Diff, Conflict, Ids, Options, Captures_In, Captures_Out) :-
     get_dict('@delete', Diff, Delete_Candidate),
     !,
@@ -110,6 +116,7 @@ apply_diff_ids_captures(Context, Diff, Conflict, Ids, Options, Captures_In, Capt
             Captures_Out = Captures_In
         )
     ).
+
 apply_diff_ids_captures(Context, Diff, Conflict, Ids, Options, Captures_In, Captures_Out) :-
     get_dict('@insert', Diff, Insert),
     !,
@@ -127,13 +134,14 @@ apply_diff_ids_captures(Context, Diff, Conflict, Ids, Options, Captures_In, Capt
             Document = Normalized_Insert
         ->  Conflict = null,
             Ids = [],
-            Captures_Out = Captures_In
+            update_existing_insert_capture(Insert, Id, Captures_In, Captures_Out)
         ;   Conflict = json{ '@op' : 'InsertConflict',
                              '@id_already_exists' : Id },
             Ids = [],
             Captures_Out = Captures_In
         )
     ).
+
 apply_diff_ids_captures(Context, Diff, Conflict, Ids, Options, Captures_In, Captures_Out) :-
     do_or_die(
         get_dict('@id', Diff, ID),

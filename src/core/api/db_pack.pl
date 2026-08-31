@@ -4,7 +4,9 @@
               pack/5,
               pack_from_context/3,
               unpack/1,
-              layer_layerids/2
+              layer_layerids/2,
+              repository_context_to_layer/2,
+              repository_layer_to_layerids/3
           ]).
 
 :- use_module(library(terminus_store)).

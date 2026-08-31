@@ -1,5 +1,6 @@
 :- module(api_patch, [
               api_patch_resource/7,
+              api_patch_resource/9,
               api_patch/6,
               api_diff/6,
               api_diff_id/8,
@@ -83,8 +84,18 @@ map_apply_captures(Context,Options,Patch_And_Ids,Conflicts,Ids_List,Empty,Captur
         ).
 
 api_patch_resource(System_DB, Auth, Path, Patch, Commit_Info, Ids, Options) :-
+    api_patch_resource(System_DB, Auth, Path, Patch, Commit_Info,
+                       no_data_version, _New_Data_Version, Ids, Options).
+
+api_patch_resource(System_DB, Auth, Path, Patch, Commit_Info,
+                   Requested_Data_Version, New_Data_Version, Ids, Options) :-
     resolve_descriptor_auth(write, System_DB, Auth, Path, instance, Branch_Descriptor),
     create_context(Branch_Descriptor, Commit_Info, Context),
+    do_or_die(
+        query_default_collection(Context, Transaction),
+        error(query_default_collection_failed_unexpectedly(Context), _)),
+    transaction_data_version(Transaction, Actual_Data_Version),
+    compare_data_versions(Requested_Data_Version, Actual_Data_Version),
     merge_options(Options, options{keep:json{'@id':true, '@type':true}}, Merged_Options),
     empty_assoc(Empty),
     with_transaction(
@@ -105,8 +116,9 @@ api_patch_resource(System_DB, Auth, Path, Patch, Commit_Info, Ids, Options) :-
             idlists_duplicates_toplevel(Non_Empty_Ids_List, Duplicates, Ids),
             die_if(Duplicates \= [], error(same_ids_in_one_transaction(Duplicates), _))
         ),
-        _
-    ).
+        Meta_Data
+    ),
+    meta_data_version(Transaction, Meta_Data, New_Data_Version).
 
 api_diff(_System_DB, _Auth, Before, After, Diff, Options) :-
     % no auth yet.

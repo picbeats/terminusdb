@@ -126,6 +126,10 @@
               % api_unbundle.pl
               unbundle/4,
 
+              % api_backup.pl
+              backup/4,
+              restore/4,
+
               % api_document.pl
               api_can_read_document/6,
               api_insert_documents/8,
@@ -161,6 +165,7 @@
               api_diff_all_documents/7,
               api_apply_squash_commit/7,
               api_patch_resource/7,
+              api_patch_resource/9,
 
               % api_log.pl
               api_log/5,
@@ -244,6 +249,7 @@
 :- use_module(api/api_rollup).
 :- use_module(api/api_bundle).
 :- use_module(api/api_unbundle).
+:- use_module(api/api_backup).
 :- use_module(api/api_document).
 :- use_module(api/api_user_organizations).
 :- use_module(api/api_patch).
