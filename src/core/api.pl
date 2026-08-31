@@ -161,6 +161,7 @@
               api_diff_all_documents/7,
               api_apply_squash_commit/7,
               api_patch_resource/7,
+              api_patch_resource/9,
 
               % api_log.pl
               api_log/5,

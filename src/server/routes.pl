@@ -2743,11 +2743,17 @@ patch_handler(post, Path, Request, System_DB, Auth) :-
                                      author: Author,
                                      message: Message },
             maybe_inject_auth_user(Auth, Patch_Commit_Info0, Patch_Commit_Info),
+            read_data_version_header(Request, Requested_Data_Version),
             api_patch_resource(System_DB, Auth, Path, Patch,
                                Patch_Commit_Info,
+                               Requested_Data_Version,
+                               New_Data_Version,
                                Ids,
                                [match_final_state(Matches)]),
-            cors_reply_json(Request, Ids)
+            write_cors_headers(Request),
+            write_data_version_header(New_Data_Version),
+            reply_json(Ids, [width(0)]),
+            nl
         )
     ).
 
@@ -3837,7 +3843,8 @@ write_cors_headers(Request) :-
         format(Out,'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\n',[]),
         format(Out,'Access-Control-Allow-Credentials: true\n',[]),
         format(Out,'Access-Control-Max-Age: 1728000\n',[]),
-        format(Out,'Access-Control-Allow-Headers: Authorization, Authorization-Remote, Accept, Accept-Encoding, Accept-Language, Host, Origin, Referer, Content-Type, Content-Length, Content-Range, Content-Disposition, Content-Description, X-HTTP-METHOD-OVERRIDE\n',[]),
+        format(Out,'Access-Control-Allow-Headers: Authorization, Authorization-Remote, Accept, Accept-Encoding, Accept-Language, Host, Origin, Referer, Content-Type, Content-Length, Content-Range, Content-Disposition, Content-Description, TerminusDB-Data-Version, X-HTTP-METHOD-OVERRIDE\n',[]),
+        format(Out,'Access-Control-Expose-Headers: TerminusDB-Data-Version\n',[]),
         format(Out,'Access-Control-Allow-Origin: ~s~n',[Origin])
     ;   true).
 
