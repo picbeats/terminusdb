@@ -2351,19 +2351,21 @@ paths:
   /patch:
     post:
       operationId: applyPatch
-      summary: Apply a patch object to another object (diff result)
+      summary: Apply a patch object to an in-memory JSON value
       x-python-client: Client::patch
       x-js-client: Client.patch
       description: |
-          Apply a patch object to another object. Typically used with the result from the diff endpoint to apply changes.
-          
+          Apply a patch object to the supplied `before` JSON value without reading or writing a database. Typically used with a result from the diff endpoint to construct an updated JSON value.
+
+          To atomically persist a field patch, insert, or delete against a database branch, use `POST /patch/{path}` instead.
+
           **Example:**
           ```bash
-          curl -u admin:root -X POST "http://localhost:6363/api/patch" \
+          curl -X POST "http://localhost:6363/api/patch" \
                -H "Content-Type: application/json" \
                -d '{
                  "before": {"@id": "Person/Jane", "@type": "Person", "name": "Jane"},
-                 "patch": {"name": {"@op": "SwapValue", "@before": "Jane", "@after": "Jannet"}}
+                 "patch": {"name": {"@op": "SwapValue", "@before": "Jane", "@after": "Janet"}}
                }'
           ```
       tags:
@@ -2380,7 +2382,7 @@ paths:
                   example: { "@id" : "Person/Jane", "@type" : "Person", "name" : "Jane"}
                 "patch":
                   type: object
-                  example: { "name" : { "@op" : "SwapValue", "@before" : "Jane", "@after": "Janine" }}
+                  example: { "name" : { "@op" : "SwapValue", "@before" : "Jane", "@after": "Janet" }}
       responses:
         200:
           description: "Successful Patch"
@@ -2388,13 +2390,13 @@ paths:
             application/json:
               schema:
                 type: object
-                example: { "@id" : "Person/Jane", "@type" : "Person", "name" : "Jannet"}
+                example: { "@id" : "Person/Jane", "@type" : "Person", "name" : "Janet"}
         401:
           $ref: '#/components/responses/IncorrectAuthenticationError'
         403:
           $ref: '#/components/responses/ForbiddenError'
         404:
-          description: "Failed to apply patch: returning conflict patch"
+          description: "Patch target was not found in the supplied JSON value"
           content:
             application/json:
               schema:
@@ -2405,67 +2407,46 @@ paths:
       - $ref: '#/components/parameters/branch_path'
     post:
       operationId: patchResource
-      summary: Apply a patch object to a resource
+      summary: Atomically apply resource patches to a branch
       description: |
-          Apply a patch object to a resource in the database. Can be used to modify schema elements, documents, or prefixes.
+          Atomically apply one patch object or an ordered list of patch operations to writable instance documents on a branch. This endpoint requires instance write permission.
 
-          The `patch` array accepts three types of operations:
-          - **Field-level patch**: `{"@id":"...","field":{"@op":"SwapValue","@before":"...","@after":"..."}}`
-          - **Insert**: `{"@op":"Insert","@insert":{"@id":"...","@type":"...","field":"value"}}`
-          - **Delete**: `{"@op":"Delete","@delete":{"@id":"..."}}` or `{"@op":"Delete","@delete":"Document/ID"}`
+          Each entry can update fields on an existing root, insert a top-level document, or delete a top-level document. The server processes entries in submitted order and returns one affected ID per successful operation in that order. An insert with only `@capture` returns the generated server ID.
 
-          Insert and Delete operations use the same format as the diff endpoint output,
-          enabling a diff→filter→patch workflow. Insert requires either `@id` or `@capture`
-          to be present in the `@insert` document.
+          The entire list runs in one transaction. If an operation has an unaccepted conflict, invalid input, or an unresolved capture, no entry is committed. The same top-level document ID cannot be affected more than once in a request.
 
-          **Captures**: Insert operations support `@capture` and `@ref` for cross-referencing
-          documents within a single patch transaction. A document with `@capture:"name"` can
-          be referenced by another document using `{"@ref":"name"}`. This is useful for
-          creating linked documents in one atomic operation:
-          ```json
-          [
-            {"@op":"Insert","@insert":{"@id":"Person/Alice","@type":"Person","@capture":"A","name":"Alice","friend":{"@ref":"B"}}},
-            {"@op":"Insert","@insert":{"@id":"Person/Bob","@type":"Person","@capture":"B","name":"Bob","friend":{"@ref":"A"}}}
-          ]
-          ```
-          A document may have both `@id` and `@capture` — `@id` assigns the document ID,
-          while `@capture` registers a name for use in `@ref` cross-references.
+          `match_final_state` defaults to `true`. It accepts idempotent retries when a field is already equal to `@after`, an identical insert is already present, or a delete target is already absent. Set it to `false` to require each `@before` state and delete target to exist.
 
-          **@ref in field-level patches**: The `@ref` mechanism also works in field-level
-          `SwapValue` operations. A `SwapValue` `@before` or `@after` value can use
-          `{"@ref":"name"}` to reference a capture from the same patch transaction. This
-          allows swapping a document's reference field to a newly inserted document:
-          ```json
-          [
-            {"@op":"Insert","@insert":{"@id":"Person/Alice","@type":"Person","@capture":"A","name":"Alice"}},
-            {"@id":"Person/Charlie","friend":{"@op":"SwapValue","@before":null,"@after":{"@ref":"A"}}}
-          ]
-          ```
-          Note that field-level patches operate on documents from the previous committed
-          layer — you cannot patch a document that was inserted in the same patch
-          transaction. However, `@ref` in a field-level patch can reference captures from
-          same-transaction inserts. URI comparisons are performed on fully expanded
-          canonical IRIs, so compressed IDs (e.g. `Person/Bob`) and full IRIs
-          (e.g. `http://example.com/document/Person/Bob`) are treated as equal.
-          
+          Insert documents may define `@capture`. Later entries can use `{"@ref":"capture-name"}` in an existing-root field patch's `@before` or `@after` value, including nested dictionaries and lists. References must point to captures created earlier in the request.
+
+          `TerminusDB-Data-Version` is an optional optimistic-concurrency precondition. A valid current value has the form `branch:<commit-id>`. On success, the response returns the newly committed value in the same header. Do not send a branch-wide precondition when using `match_final_state=true` for independently safe field updates.
+
           **Example:**
           ```bash
-          curl -u admin:root -X POST "http://localhost:6363/api/patch/admin/db/local/branch/main" \
+          curl -u admin:root -X POST "http://localhost:6363/api/patch/admin/mydb/local/branch/main" \
                -H "Content-Type: application/json" \
+               -H "TerminusDB-Data-Version: branch:known-head" \
                -d '{
-                 "patch": [
-                   {"@id": "Person/Jane", "name": {"@op": "SwapValue", "@before": "Jane", "@after": "Jannet"}},
-                   {"@op": "Insert", "@insert": {"@id": "Person/Bob", "@type": "Person", "name": "Bob"}},
-                   {"@op": "Delete", "@delete": {"@id": "Person/Alice"}}
-                 ],
                  "author": "admin",
-                 "message": "Update people"
+                 "message": "Create Mary, link John, remove Obsolete",
+                 "patch": [
+                   {"@op": "Insert", "@insert": {"@id": "Person/Mary", "@capture": "mary", "@type": "Person", "name": "Mary"}},
+                   {"@id": "Person/John", "friend": {"@op": "SwapValue", "@before": null, "@after": {"@ref": "mary"}}},
+                   {"@op": "Delete", "@delete": "Person/Obsolete"}
+                 ]
                }'
           ```
       x-python-client: Client::patch_resource
       x-js-client: Client.patchResource
       tags:
         - Change management
+      parameters:
+        - name: TerminusDB-Data-Version
+          in: header
+          required: false
+          description: Optional optimistic-concurrency precondition, formatted as `branch:<commit-id>`. A stale value returns `api:DataVersionMismatch` and performs no writes.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -2478,9 +2459,11 @@ paths:
                 - "message"
               properties:
                 "patch":
-                  type: array
-                  items:
-                    type: object
+                  oneOf:
+                    - type: object
+                    - type: array
+                      items:
+                        type: object
                   example:
                     - '@id': Obj/id1
                       name:
@@ -2490,6 +2473,7 @@ paths:
                     - '@op': Insert
                       '@insert':
                         '@id': Obj/id3
+                        '@capture': third
                         '@type': Class
                         name: baz
                     - '@op': Delete
@@ -2508,6 +2492,11 @@ paths:
       responses:
         200:
           description: "Patch applied cleanly"
+          headers:
+            TerminusDB-Data-Version:
+              description: The newly committed branch version, formatted as `branch:<commit-id>`.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -2515,6 +2504,8 @@ paths:
                 items: 
                   type: string
                 example: ["Obj/id1", "Obj/id2"]
+        400:
+          description: Invalid patch input, duplicate affected IDs, unresolved capture, malformed data version, or a stale data-version precondition. The branch is unchanged.
         401:
           $ref: '#/components/responses/IncorrectAuthenticationError'
         403:
@@ -2527,7 +2518,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: { "@type" : "api:PatchError", "api:status" : "api:conflict", "api:witnesses" : [{"@op" : "InsertConflict", "@id_already_exists" : "Person/Jane"}]}
+                example: { "@type" : "api:PatchResponse", "api:status" : "api:conflict", "api:error" : {"@type" : "api:PatchConflict", "api:conflicts" : [{"@op" : "InsertConflict", "@id_already_exists" : "Person/Jane"}]}}
   /apply/{path}:
     parameters:
       - $ref: '#/components/parameters/branch_path'

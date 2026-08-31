@@ -11,6 +11,10 @@ function rawParse (res, cb) {
   })
 }
 
+function dataVersionHeader (res) {
+  return res.header['terminusdb-data-version']
+}
+
 describe('patch', function () {
   let agent
   let ty1
@@ -31,16 +35,21 @@ describe('patch', function () {
           '@type': 'Class',
           '@id': ty1,
           name: 'xsd:string',
+          other: { '@type': 'Optional', '@class': 'xsd:string' },
+          friend: { '@type': 'Optional', '@class': ty1 },
+          refs: { '@type': 'List', '@class': ty1 },
         },
       ]
       const instance = [
         {
           '@type': ty1,
           name: 'foo',
+          refs: [],
         },
         {
           '@type': ty1,
           name: 'bar',
+          refs: [],
         },
       ]
       await document.insert(agent, { schema })
@@ -61,6 +70,194 @@ describe('patch', function () {
       const message = 'yo'
       const res = await agent.post(path).send({ patch, author, message })
       expect(res.body).to.deep.equal([id1])
+    })
+
+    it('returns and enforces TerminusDB-Data-Version', async function () {
+      const path = api.path.patchDb(agent)
+      const before = await document.get(agent, { query: { id: id1, as_list: true } })
+      const v0 = dataVersionHeader(before)
+      const applied = await agent.post(path)
+        .set('TerminusDB-Data-Version', v0)
+        .send({
+          patch: { '@id': id1, name: { '@op': 'SwapValue', '@before': 'foo', '@after': 'bar' } },
+          author: 'me',
+          message: 'versioned patch',
+        })
+      const v1 = dataVersionHeader(applied)
+
+      expect(applied.status).to.equal(200)
+      expect(v1).to.match(/^branch:/)
+      expect(v1).to.not.equal(v0)
+
+      const stale = await agent.post(path)
+        .set('TerminusDB-Data-Version', v0)
+        .send({
+          patch: { '@id': id1, name: { '@op': 'SwapValue', '@before': 'bar', '@after': 'baz' } },
+          author: 'me',
+          message: 'stale versioned patch',
+        })
+
+      expect(stale.status).to.equal(400)
+      expect(stale.body['api:error']).to.deep.equal(api.error.dataVersionMismatch(v0, v1))
+      const current = await document.get(agent, { query: { id: id1, as_list: true } })
+      expect(current.body[0].name).to.equal('bar')
+    })
+
+    it('applies mixed inserts, an existing-root update, and a delete atomically', async function () {
+      const path = api.path.patchDb(agent)
+      const mary = `${ty1}/Mary`
+      const patch = [
+        {
+          '@op': 'Insert',
+          '@insert': { '@id': mary, '@capture': 'mary', '@type': ty1, name: 'Mary', refs: [] },
+        },
+        {
+          '@id': id1,
+          friend: { '@op': 'SwapValue', '@before': null, '@after': { '@ref': 'mary' } },
+        },
+        { '@op': 'Delete', '@delete': { '@id': id2 } },
+      ]
+      const res = await agent.post(path).send({ patch, author: 'me', message: 'mixed patch' })
+
+      expect(res.status).to.equal(200)
+      expect(res.body).to.have.lengthOf(3)
+      expect(res.body[1]).to.equal(id1)
+      expect(res.body[2]).to.equal(id2)
+      const john = await document.get(agent, { query: { id: id1, as_list: true } })
+      expect(john.body[0].friend).to.equal(mary)
+      const inserted = await document.get(agent, { query: { id: res.body[0], as_list: true } })
+      expect(inserted.body[0].name).to.equal('Mary')
+      const deleted = await agent.get(api.path.document(agent)).query({ id: id2 }).buffer(true).parse(rawParse)
+      expect(deleted.body['api:status']).to.equal('api:not_found')
+    }).timeout(10000)
+
+    it('rolls back a mixed patch when an existing-root update conflicts', async function () {
+      const path = api.path.patchDb(agent)
+      const inserted = `${ty1}/Rollback`
+      const patch = [
+        { '@op': 'Insert', '@insert': { '@id': inserted, '@type': ty1, name: 'Rollback', refs: [] } },
+        { '@id': id1, name: { '@op': 'SwapValue', '@before': 'wrong', '@after': 'changed' } },
+        { '@op': 'Delete', '@delete': { '@id': id2 } },
+      ]
+      const res = await agent.post(path).send({ patch, author: 'me', message: 'rollback', match_final_state: false })
+
+      expect(res.status).to.equal(409)
+      const absent = await agent.get(api.path.document(agent)).query({ id: inserted }).buffer(true).parse(rawParse)
+      expect(absent.body['api:status']).to.equal('api:not_found')
+      const unchanged = await document.get(agent, { query: { id: id1, as_list: true } })
+      expect(unchanged.body[0].name).to.equal('foo')
+      const retained = await document.get(agent, { query: { id: id2, as_list: true } })
+      expect(retained.body[0].name).to.equal('bar')
+    }).timeout(10000)
+
+    it('allows non-overlapping field patches and rejects an incompatible same-field patch', async function () {
+      const path = api.path.patchDb(agent)
+      const first = await agent.post(path).send({
+        patch: { '@id': id1, name: { '@op': 'SwapValue', '@before': 'foo', '@after': 'first' } },
+        author: 'me',
+        message: 'first field change',
+      })
+      const other = await agent.post(path).send({
+        patch: { '@id': id1, other: { '@op': 'SwapValue', '@before': null, '@after': 'other' } },
+        author: 'me',
+        message: 'other field change',
+      })
+      const conflicting = await agent.post(path).send({
+        patch: { '@id': id1, name: { '@op': 'SwapValue', '@before': 'foo', '@after': 'second' } },
+        author: 'me',
+        message: 'conflicting field change',
+        match_final_state: false,
+      })
+
+      expect(first.status).to.equal(200)
+      expect(other.status).to.equal(200)
+      expect(conflicting.status).to.equal(409)
+      const current = await document.get(agent, { query: { id: id1, as_list: true } })
+      expect(current.body[0]).to.include({ name: 'first', other: 'other' })
+    })
+
+    it('rejects writes from a read-only principal', async function () {
+      const user = util.randomString()
+      await agent.post('/api/users').send({ name: user, password: user })
+      await agent.post('/api/capabilities').send({
+        operation: 'grant',
+        scope: `${agent.orgName}/${agent.dbName}`,
+        user,
+        roles: ['Consumer Role'],
+        scope_type: 'database',
+      })
+      const readOnly = new Agent({ orgName: agent.orgName, dbName: agent.dbName })
+        .auth({ user, password: user, skipJwt: true })
+      const readable = await document.get(readOnly, { query: { id: id1, as_list: true } })
+      const rejected = await readOnly.post(api.path.patchDb(readOnly)).send({
+        patch: { '@id': id1, name: { '@op': 'SwapValue', '@before': 'foo', '@after': 'bar' } },
+        author: user,
+        message: 'forbidden patch',
+      })
+
+      expect(readable.status).to.equal(200)
+      expect(rejected.status).to.equal(403)
+      const unchanged = await document.get(agent, { query: { id: id1, as_list: true } })
+      expect(unchanged.body[0].name).to.equal('foo')
+    }).timeout(10000)
+
+    it('replays an identical captured insert before a later captured field patch', async function () {
+      const path = api.path.patchDb(agent)
+      const mary = `${ty1}/Mary`
+      const patch = [
+        {
+          '@op': 'Insert',
+          '@insert': { '@id': mary, '@capture': 'mary', '@type': ty1, name: 'Mary', refs: [] },
+        },
+        {
+          '@id': id1,
+          friend: { '@op': 'SwapValue', '@before': null, '@after': { '@ref': 'mary' } },
+        },
+      ]
+      const first = await agent.post(path).send({ patch, author: 'me', message: 'first captured patch' })
+      const second = await agent.post(path).send({ patch, author: 'me', message: 'replayed captured patch' })
+
+      expect(first.status).to.equal(200)
+      expect(second.status).to.equal(200)
+      const current = await document.get(agent, { query: { id: id1, as_list: true } })
+      expect(current.body[0].friend).to.equal(mary)
+    }).timeout(10000)
+
+    it('resolves captured references inside list patch values', async function () {
+      const path = api.path.patchDb(agent)
+      const mary = `${ty1}/Mary`
+      const res = await agent.post(path).send({
+        patch: [
+          {
+            '@op': 'Insert',
+            '@insert': { '@id': mary, '@capture': 'mary', '@type': ty1, name: 'Mary', refs: [] },
+          },
+          {
+            '@id': id1,
+            refs: { '@op': 'SwapValue', '@before': [], '@after': [{ '@ref': 'mary' }] },
+          },
+        ],
+        author: 'me',
+        message: 'captured list patch',
+      })
+
+      expect(res.status).to.equal(200)
+      const current = await document.get(agent, { query: { id: id1, as_list: true } })
+      expect(current.body[0].refs).to.deep.equal([mary])
+    }).timeout(10000)
+
+    it('rejects a field patch that references an unknown capture', async function () {
+      const res = await agent.post(api.path.patchDb(agent)).send({
+        patch: {
+          '@id': id1,
+          friend: { '@op': 'SwapValue', '@before': null, '@after': { '@ref': 'missing' } },
+        },
+        author: 'me',
+        message: 'missing capture',
+      })
+
+      expect(res.status).to.equal(400)
+      expect(res.body['api:error']['@type']).to.equal('api:NotAllCapturesFound')
     })
 
     it('applies patch to db and gets a conflict', async function () {
