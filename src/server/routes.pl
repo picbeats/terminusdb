@@ -1362,11 +1362,49 @@ test(rebase_divergent_history, [
 :- end_tests(rebase_endpoint).
 
 %%%%%%%%%%%%%%%%%%%% Pack Handlers %%%%%%%%%%%%%%%%%%%%%%%%%
+:- http_handler(api(backup/Path), cors_handler(Method, backup_handler(Path)),
+                [method(Method), time_limit(infinite), methods([options,post])]).
+
+:- http_handler(api(restore/Path), cors_handler(Method, restore_handler(Path)),
+                [method(Method), time_limit(infinite), methods([options,post])]).
+
+:- http_handler(api(bundle/Path), cors_handler(Method, bundle_handler(Path)),
+                [method(Method),
+                 time_limit(infinite),
+                 chunked,
+                 methods([options,post])]).
+
 :- http_handler(api(pack/Path), cors_handler(Method, pack_handler(Path)),
                 [method(Method),
                  time_limit(infinite),
                  chunked,
                  methods([options,post])]).
+
+backup_handler(post, Path, Request, System_DB, Auth) :-
+    api_report_errors(
+        backup, Request,
+        (   backup(System_DB, Auth, Path, Backup),
+            cors_reply_json(Request, Backup, [status(200), width(0)]))).
+
+restore_handler(post, Path, Request, System_DB, Auth) :-
+    get_payload(Backup, Request),
+    api_report_errors(
+        restore, Request,
+        (   restore(System_DB, Auth, Path, Backup),
+            cors_reply_json(Request,
+                            _{'@type': 'api:RestoreResponse',
+                              'api:status': "api:success"},
+                            [status(200), width(0)]))).
+
+bundle_handler(post, Path, Request, System_DB, Auth) :-
+    api_report_errors(
+        bundle,
+        Request,
+        bundle(System_DB, Auth, Path, Payload, [])),
+
+    format('Content-type: application/octets~n', []),
+    format('Status: 200 OK~n~n', []),
+    format('~s', [Payload]).
 
 pack_handler(post,Path,Request, System_DB, Auth) :-
     get_payload(Document,Request),
@@ -1478,12 +1516,104 @@ test(pack_nothing, [
 
 :- end_tests(pack_endpoint).
 
+:- begin_tests(backup_endpoint).
+
+:- use_module(core(util/test_utils)).
+:- use_module(core(api/db_branch)).
+:- use_module(library(http/http_open)).
+
+test(backup_restore_all_branches,
+     [setup(setup_temp_server(State, Server)), cleanup(teardown_temp_server(State))]) :-
+    add_user('_a_test_user_', some('password'), _),
+    create_db_without_schema('_a_test_user_', source),
+    open_descriptor(system_descriptor{}, System_DB),
+    super_user_authority(Auth),
+    branch_create(System_DB, Auth, "_a_test_user_/source/local/branch/work",
+                  branch("_a_test_user_/source"), _),
+    resolve_absolute_string_descriptor("_a_test_user_/source/local/branch/work", Work),
+    create_context(Work, commit_info{author: "test", message: "work"}, Work_Context),
+    with_transaction(Work_Context, ask(Work_Context, insert(a, b, c)), _),
+    atomic_list_concat([Server, '/api/backup/_a_test_user_/source'], Backup_URI),
+    http_post(Backup_URI, atom(''), Backup,
+              [authorization(basic('_a_test_user_', 'password'))]),
+    atomic_list_concat([Server, '/api/restore/_a_test_user_/restored'], Restore_URI),
+    http_post(Restore_URI, json(Backup), Reply,
+              [authorization(basic('admin', 'root')), status_code(Status)]),
+    assertion(Status = 200),
+    assertion(Reply = json(['@type'='api:RestoreResponse', 'api:status'='api:success'])),
+    resolve_absolute_string_descriptor("_a_test_user_/restored/local/_commits", Restored),
+    has_branch(Restored, "main"),
+    has_branch(Restored, "work").
+
+:- end_tests(backup_endpoint).
+
+:- begin_tests(bundle_endpoint).
+
+:- use_module(core(util/test_utils)).
+:- use_module(library(http/http_open)).
+
+test(bundle_unbundle, [
+         setup(setup_temp_server(State, Server)),
+         cleanup(teardown_temp_server(State))
+     ]) :-
+    add_user('_a_test_user_',some('password'),_User_ID),
+    create_db_without_schema('_a_test_user_',foo),
+
+    resolve_absolute_string_descriptor('_a_test_user_/foo', Descriptor),
+    create_context(Descriptor, commit_info{author:"user",message:"commit a"}, Context),
+    with_transaction(Context,
+                     ask(Context,
+                         insert(a,b,c)),
+                     _),
+
+    atomic_list_concat([Server, '/api/bundle/_a_test_user_/foo'], Bundle_URI),
+    http_post(Bundle_URI,
+              atom(''),
+              Payload,
+              [authorization(basic('_a_test_user_','password'))]),
+
+    create_db_without_schema('_a_test_user_',bar),
+    string_codes(Payload, Payload_Bytes),
+    atomic_list_concat([Server, '/api/unbundle/_a_test_user_/bar'], Unbundle_URI),
+    http_post(Unbundle_URI,
+              bytes('application/octets', Payload_Bytes),
+              Reply,
+              [authorization(basic('_a_test_user_','password')),
+               status_code(Status)]),
+    assertion(Status = 200),
+    assertion(Reply = json(['@type'='api:UnbundleResponse', 'api:status'='api:success'])),
+
+    resolve_absolute_string_descriptor('_a_test_user_/bar', Restored_Descriptor),
+    create_context(Restored_Descriptor, Restored_Context),
+    once(ask(Restored_Context, t(a,b,c))).
+
+:- end_tests(bundle_endpoint).
+
 %%%%%%%%%%%%%%%%%%%% Unpack Handlers %%%%%%%%%%%%%%%%%%%%%%%
+:- http_handler(api(unbundle/Path), cors_handler(Method, unbundle_handler(Path)),
+                [method(Method),
+                 chunked,
+                 time_limit(infinite),
+                 methods([options,post])]).
+
 :- http_handler(api(unpack/Path), cors_handler(Method, unpack_handler(Path)),
                 [method(Method),
                  chunked,
                  time_limit(infinite),
                  methods([options,post])]).
+
+unbundle_handler(post, Path, Request, System_DB, Auth) :-
+    get_payload(Payload, Request),
+
+    api_report_errors(
+        unbundle,
+        Request,
+        (   unbundle(System_DB, Auth, Path, Payload),
+            cors_reply_json(Request,
+                            _{'@type' : 'api:UnbundleResponse',
+                              'api:status' : "api:success"},
+                            [status(200), width(0)])
+        )).
 
 unpack_handler(post, Path, Request, System_DB, Auth) :-
 
