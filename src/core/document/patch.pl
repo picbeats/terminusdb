@@ -154,6 +154,14 @@ values_equal(V1, V2, _Prefixes) :-
     ),
     !,
     values_equal(V1, V2).
+values_equal(V1, V2, _Prefixes) :-
+    (   atom(V1) -> A1 = V1 ; atom_string(A1, V1)),
+    (   atom(V2) -> A2 = V2 ; atom_string(A2, V2)),
+    (   A1 == ''
+    ;   A2 == ''
+    ),
+    !,
+    A1 = A2.
 values_equal(V1, V2, Prefixes) :-
     (   atom(V1) -> A1 = V1 ; atom_string(A1, V1)),
     (   atom(V2) -> A2 = V2 ; atom_string(A2, V2)),
@@ -1111,6 +1119,23 @@ test(swap_string_value_regression, []) :-
              },
     simple_patch(Patch, Before, success(After), []).
 
+test(swap_string_to_empty_with_prefixes, []) :-
+    %% Empty strings are values, not prefixable IRIs.
+    Prefixes = _{ '@base' : "http://somewhere.for.now/document/" },
+    Before = _{ '@id' : "Person/1",
+                '@type' : "Person",
+                name : "volts"
+              },
+    Patch = _{ name : _{ '@op' : "SwapValue",
+                         '@before' : "volts",
+                         '@after' : "" }
+             },
+    After = _{ '@id' : "Person/1",
+               '@type' : "Person",
+               name : ""
+             },
+    simple_patch(Patch, Before, success(After), [prefixes(Prefixes)]).
+
 test(values_equal_dict_identity, []) :-
     %% Direct unit test: equal dicts should unify.
     D = json{ '@type' : "Quantity", value : 1 },
@@ -1179,6 +1204,16 @@ test(different_ids_not_equal, []) :-
 test(no_prefixes_fallback, []) :-
     values_equal("Person/Bob", "Person/Bob", _{}).
 
+test(empty_strings_with_prefixes, []) :-
+    Prefixes = _{ '@base' : "http://somewhere.for.now/document/" },
+    values_equal("", "", Prefixes),
+    \+ values_equal("", "Person/Bob", Prefixes).
+
+test(nonempty_string_against_empty_with_prefixes, []) :-
+    Prefixes = _{ '@base' : "http://somewhere.for.now/document/" },
+    \+ values_equal("Person/Bob", "", Prefixes),
+    \+ values_equal("", "Person/Bob", Prefixes).
+
 test(number_comparison_with_prefixes, []) :-
     Prefixes = _{ '@base' : "http://somewhere.for.now/document/" },
     values_equal(1.1, 11r10, Prefixes).
@@ -1188,4 +1223,3 @@ test(dict_comparison_with_prefixes, []) :-
     values_equal(json{x:1}, json{x:1}, Prefixes).
 
 :- end_tests(values_equal_canonical).
-
